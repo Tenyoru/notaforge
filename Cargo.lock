@@ -801,6 +801,7 @@ name = "notaforge"
 version = "0.1.0"
 dependencies = [
  "ankiconnect-rs",
+ "anyhow",
  "clap",
  "reqwest",
  "tokio",
