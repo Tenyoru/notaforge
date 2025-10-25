@@ -1,5 +1,5 @@
 {
-  description = "My project description";
+  description = "an automatic Anki card creator";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs";
