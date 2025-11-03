@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, anyhow};
+use futures::future::join_all;
 use reqwest::Client;
 use serde::Deserialize;
 
@@ -17,32 +18,34 @@ pub async fn build_vocabulary_card(
     target_lang: &str,
     translate_base: Option<&str>,
 ) -> Result<VocabularyCard> {
-    let dictionary = fetch_dictionary_entry(client, term)
-        .await
-        .unwrap_or_default();
+    let (dictionary_res, datamuse_res) = tokio::join!(
+        fetch_dictionary_entry(client, term),
+        fetch_datamuse_synonyms(client, term)
+    );
+
+    let dictionary = dictionary_res.unwrap_or_default();
     let mut synonyms_set: BTreeSet<String> = dictionary.synonyms.iter().cloned().collect();
-    let datamuse_synonyms = fetch_datamuse_synonyms(client, term)
-        .await
-        .unwrap_or_default();
+    let datamuse_synonyms = datamuse_res.unwrap_or_default();
     synonyms_set.extend(datamuse_synonyms);
     let synonyms: Vec<String> = synonyms_set.into_iter().collect();
 
     let part_of_speech = dictionary.part_of_speech.unwrap_or_default();
     let pronunciation = dictionary.pronunciation.unwrap_or_default();
 
-    let translation = translate_text(client, term, source_lang, target_lang, translate_base)
-        .await
-        .with_context(|| format!("failed to translate '{term}'"))?;
-
     let synonyms_joined = synonyms.join(", ");
     let translated_synonyms = if synonyms_joined.is_empty() {
         String::new()
     } else {
+        let futures = synonyms.iter().map(|synonym| {
+            translate_text(client, synonym, source_lang, target_lang, translate_base)
+        });
+        let results = join_all(futures).await;
+
         let mut translated = Vec::with_capacity(synonyms.len());
-        for synonym in &synonyms {
-            match translate_text(client, synonym, source_lang, target_lang, translate_base).await {
-                Ok(value) => translated.push(value),
-                Err(_) => translated.push(synonym.clone()),
+        for (original, result) in synonyms.iter().zip(results) {
+            match result {
+                Ok(value) if !value.trim().is_empty() => translated.push(value),
+                _ => translated.push(original.clone()),
             }
         }
         translated.join(", ")
@@ -52,15 +55,20 @@ pub async fn build_vocabulary_card(
         .definition
         .unwrap_or_else(|| format!("No definition found for {term}."));
 
-    let translated_usage = translate_text(
-        client,
-        &definition_text,
-        source_lang,
-        target_lang,
-        translate_base,
-    )
-    .await
-    .unwrap_or(definition_text.clone());
+    let (translation_res, usage_res) = tokio::join!(
+        translate_text(client, term, source_lang, target_lang, translate_base),
+        translate_text(
+            client,
+            &definition_text,
+            source_lang,
+            target_lang,
+            translate_base
+        )
+    );
+
+    let translation = translation_res.with_context(|| format!("failed to translate '{term}'"))?;
+
+    let translated_usage = usage_res.unwrap_or(definition_text.clone());
 
     let example_sentence = dictionary
         .example
