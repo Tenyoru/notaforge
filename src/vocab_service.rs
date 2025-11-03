@@ -17,6 +17,8 @@ pub async fn build_vocabulary_card(
     source_lang: &str,
     target_lang: &str,
     translate_base: Option<&str>,
+    translate_retries: u32,
+    translate_backoff_ms: u64,
 ) -> Result<VocabularyCard> {
     let (dictionary_res, datamuse_res) = tokio::join!(
         fetch_dictionary_entry(client, term),
@@ -37,7 +39,15 @@ pub async fn build_vocabulary_card(
         String::new()
     } else {
         let futures = synonyms.iter().map(|synonym| {
-            translate_text(client, synonym, source_lang, target_lang, translate_base)
+            translate_text(
+                client,
+                synonym,
+                source_lang,
+                target_lang,
+                translate_base,
+                translate_retries,
+                translate_backoff_ms,
+            )
         });
         let results = join_all(futures).await;
 
@@ -56,13 +66,23 @@ pub async fn build_vocabulary_card(
         .unwrap_or_else(|| format!("No definition found for {term}."));
 
     let (translation_res, usage_res) = tokio::join!(
-        translate_text(client, term, source_lang, target_lang, translate_base),
+        translate_text(
+            client,
+            term,
+            source_lang,
+            target_lang,
+            translate_base,
+            translate_retries,
+            translate_backoff_ms,
+        ),
         translate_text(
             client,
             &definition_text,
             source_lang,
             target_lang,
-            translate_base
+            translate_base,
+            translate_retries,
+            translate_backoff_ms,
         )
     );
 
@@ -169,6 +189,8 @@ async fn translate_text(
     source_lang: &str,
     target_lang: &str,
     translate_base: Option<&str>,
+    retries: u32,
+    backoff_ms: u64,
 ) -> Result<String> {
     if text.trim().is_empty() {
         return Ok(String::new());
@@ -189,18 +211,42 @@ async fn translate_text(
         urlencoding::encode(text)
     );
 
-    let response: LingvaResponse = client
-        .get(url)
-        .send()
-        .await
-        .context("Lingva request failed")?
-        .error_for_status()
-        .context("Lingva returned error")?
-        .json()
-        .await
-        .context("Lingva response parsing failed")?;
+    let mut attempt = 0;
+    let mut delay = backoff_ms.max(200);
 
-    Ok(response.translation)
+    loop {
+        let response = client.get(&url).send().await;
+        match response {
+            Ok(resp) => {
+                if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    if attempt < retries {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        attempt += 1;
+                        delay = (delay as f64 * 1.5).round() as u64;
+                        continue;
+                    } else {
+                        return Ok(String::new());
+                    }
+                }
+
+                let resp = resp.error_for_status().context("Lingva returned error")?;
+                let parsed: LingvaResponse = resp
+                    .json()
+                    .await
+                    .context("Lingva response parsing failed")?;
+                return Ok(parsed.translation);
+            }
+            Err(err) => {
+                if attempt < retries {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    attempt += 1;
+                    delay = (delay as f64 * 1.5).round() as u64;
+                    continue;
+                }
+                return Err(err).context("Lingva request failed");
+            }
+        }
+    }
 }
 
 fn collect_synonyms(definitions: &[Definition], base_synonyms: Vec<String>) -> Vec<String> {

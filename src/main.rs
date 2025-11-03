@@ -43,6 +43,14 @@ struct Args {
     /// Target language code used for translation lookups
     #[arg(long)]
     target_lang: Option<String>,
+
+    /// Maximum number of retries for translation API calls
+    #[arg(long, default_value_t = 2)]
+    translate_retries: u32,
+
+    /// Base backoff in milliseconds for translation retries
+    #[arg(long, default_value_t = 500)]
+    translate_backoff_ms: u64,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -89,6 +97,15 @@ async fn main() -> Result<()> {
         .or_else(|| config.target_lang.clone())
         .unwrap_or_else(|| "ru".to_string());
 
+    let translate_retries = args
+        .translate_retries
+        .max(config.translate_retries.unwrap_or(args.translate_retries));
+    let translate_backoff_ms = args.translate_backoff_ms.max(
+        config
+            .translate_backoff_ms
+            .unwrap_or(args.translate_backoff_ms),
+    );
+
     let client = AnkiClient::new();
     let deck = find_deck(&client, &deck_name)?;
     let model = find_model(&client, &model_name)?;
@@ -115,6 +132,8 @@ async fn main() -> Result<()> {
         &source_lang,
         &target_lang,
         config.translation_base.as_deref(),
+        translate_retries,
+        translate_backoff_ms,
     )
     .await?;
 

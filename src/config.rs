@@ -13,6 +13,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub extra_tags: Vec<String>,
     pub translation_base: Option<String>,
+    pub translate_retries: Option<u32>,
+    pub translate_backoff_ms: Option<u64>,
 }
 
 pub fn load(path: &Path) -> Result<AppConfig> {
@@ -61,6 +63,8 @@ source_lang = "en"
 target_lang = "es"
 extra_tags = ["custom", " spaced "]
 translation_base = "https://example.com"
+translate_retries = 3
+translate_backoff_ms = 750
 "#
         )
         .unwrap();
@@ -74,6 +78,8 @@ translation_base = "https://example.com"
             config.translation_base.as_deref(),
             Some("https://example.com")
         );
+        assert_eq!(config.translate_retries, Some(3));
+        assert_eq!(config.translate_backoff_ms, Some(750));
         assert_eq!(
             config.extra_tags,
             vec!["custom".to_string(), "spaced".to_string()]
