@@ -1,7 +1,7 @@
 mod anki;
 mod card_template;
 use anki::*;
-use ankiconnect_rs::{AnkiClient, MediaSource, NoteBuilder};
+use ankiconnect_rs::{AnkiClient, NoteBuilder};
 use anyhow::Result;
 use card_template::{CardTemplate, ExampleSentence, SimpleCard, VocabularyCard};
 use clap::{Parser, ValueEnum};
@@ -70,18 +70,6 @@ async fn main() -> Result<()> {
     for tag in &fields.tags {
         builder = builder.with_tag(tag);
     }
-
-    builder = if matches!(args.template, TemplateKind::Vocabulary) {
-        builder.with_image(
-            front_field,
-            MediaSource::Url(
-                "https://cdn.pixabay.com/photo/2023/08/18/15/02/dog-8198719_640.jpg".to_string(),
-            ),
-            "test_dog.jpg",
-        )
-    } else {
-        builder
-    };
 
     let note = builder.build()?;
 
