@@ -3,7 +3,10 @@ mod card_template;
 mod config;
 mod vocab_service;
 use anki::*;
-use ankiconnect_rs::{AnkiClient, DuplicateScope, NoteBuilder};
+use ankiconnect_rs::{
+    AnkiClient, DuplicateScope, NoteBuilder,
+    builders::{Query, QueryBuilder},
+};
 use anyhow::{Result, anyhow};
 use card_template::{CardFields, CardTemplate, SimpleCard, VocabularyCard};
 use clap::{Parser, ValueEnum};
@@ -93,6 +96,18 @@ async fn main() -> Result<()> {
     let front_field = get_model_field(&model, "Front")?;
     let back_field = get_model_field(&model, "Back")?;
 
+    let term_tag = build_term_tag(&args.term);
+    let duplicate_query = build_duplicate_query(deck.name(), &term_tag);
+
+    if !client.cards().find(&duplicate_query)?.is_empty() {
+        println!(
+            "Note for term '{}' already exists in deck '{}'; skipping.",
+            args.term,
+            deck.name()
+        );
+        return Ok(());
+    }
+
     let http_client = reqwest::Client::new();
     let vocabulary_card = build_vocabulary_card(
         &http_client,
@@ -108,7 +123,6 @@ async fn main() -> Result<()> {
         TemplateKind::Simple => render_simple_fields(&vocabulary_card),
     };
 
-    let term_tag = build_term_tag(&args.term);
     if !fields.tags.iter().any(|tag| tag == &term_tag) {
         fields.tags.push(term_tag.clone());
     }
@@ -215,4 +229,34 @@ fn build_term_tag(term: &str) -> String {
     }
 
     format!("term:{}", slug)
+}
+
+fn build_duplicate_query(deck_name: &str, term_tag: &str) -> Query {
+    QueryBuilder::new()
+        .in_deck(deck_name)
+        .and()
+        .has_tag("auto-generated")
+        .and()
+        .has_tag(term_tag)
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn term_tag_slugifies_special_chars() {
+        assert_eq!(build_term_tag("taken aback"), "term:taken_aback");
+        assert_eq!(build_term_tag("  Weird-term?! "), "term:weird_term");
+    }
+
+    #[test]
+    fn duplicate_query_matches_expected_structure() {
+        let query = build_duplicate_query("My Deck", "term:word");
+        assert_eq!(
+            query.as_str(),
+            "deck:\"My Deck\" tag:auto\\-generated tag:term\\:word"
+        );
+    }
 }
