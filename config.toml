@@ -1,0 +1,7 @@
+deck = "Default"
+model = "Basic"
+template = "vocabulary"
+source_lang = "en"
+target_lang = "ru"
+translation_base = "https://lingva.ml/api/v1"
+extra_tags = ["notaforge"]

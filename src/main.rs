@@ -1,25 +1,45 @@
 mod anki;
 mod card_template;
+mod config;
+mod vocab_service;
 use anki::*;
-use ankiconnect_rs::{AnkiClient, NoteBuilder};
-use anyhow::Result;
-use card_template::{CardTemplate, ExampleSentence, SimpleCard, VocabularyCard};
+use ankiconnect_rs::{AnkiClient, DuplicateScope, NoteBuilder};
+use anyhow::{Result, anyhow};
+use card_template::{CardFields, CardTemplate, SimpleCard, VocabularyCard};
 use clap::{Parser, ValueEnum};
+use std::path::PathBuf;
+use vocab_service::build_vocabulary_card;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Path to the configuration file (TOML)
+    #[arg(long, default_value = "notaforge.toml")]
+    config: PathBuf,
+
     /// Name of the Anki deck to use
     #[arg(short, long)]
-    deck: String,
+    deck: Option<String>,
 
     /// Name of the Anki model to use (default: Basic)
-    #[arg(short, long, default_value = "Basic")]
-    model: String,
+    #[arg(short, long)]
+    model: Option<String>,
 
     /// Card template to use when generating fields
-    #[arg(short, long, value_enum, default_value_t = TemplateKind::Vocabulary)]
-    template: TemplateKind,
+    #[arg(short, long, value_enum)]
+    template: Option<TemplateKind>,
+
+    /// Term to build a card for
+    #[arg(short = 'w', long)]
+    term: String,
+
+    /// Source language code used for translation lookups
+    #[arg(long)]
+    source_lang: Option<String>,
+
+    /// Target language code used for translation lookups
+    #[arg(long)]
+    target_lang: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -31,37 +51,73 @@ enum TemplateKind {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let client = AnkiClient::new();
+    let config = config::load(&args.config)?;
 
-    let deck = find_deck(&client, &args.deck)?;
-    let model = find_model(&client, &args.model)?;
+    let deck_name = args
+        .deck
+        .clone()
+        .or_else(|| config.deck.clone())
+        .ok_or_else(|| anyhow!("Deck must be provided via CLI or config"))?;
+
+    let model_name = args
+        .model
+        .clone()
+        .or_else(|| config.model.clone())
+        .ok_or_else(|| anyhow!("Model must be provided via CLI or config"))?;
+
+    let template_kind = match args.template {
+        Some(kind) => kind,
+        None => match config.template.as_deref() {
+            Some(name) => TemplateKind::from_str(name, true)
+                .map_err(|_| anyhow!("Invalid template '{}' in config", name))?,
+            None => TemplateKind::Vocabulary,
+        },
+    };
+
+    let source_lang = args
+        .source_lang
+        .clone()
+        .or_else(|| config.source_lang.clone())
+        .unwrap_or_else(|| "en".to_string());
+
+    let target_lang = args
+        .target_lang
+        .clone()
+        .or_else(|| config.target_lang.clone())
+        .unwrap_or_else(|| "ru".to_string());
+
+    let client = AnkiClient::new();
+    let deck = find_deck(&client, &deck_name)?;
+    let model = find_model(&client, &model_name)?;
 
     let front_field = get_model_field(&model, "Front")?;
     let back_field = get_model_field(&model, "Back")?;
 
-    let fields = match args.template {
-        TemplateKind::Vocabulary => VocabularyCard {
-            term: "aback",
-            pronunciation: "/əˈbæk/",
-            part_of_speech: "adverb",
-            example: ExampleSentence {
-                sentence: "I was taken aback by her sudden outburst.",
-                highlight: "taken aback",
-            },
-            translation_heading: "застигнутый врасплох",
-            translation_synonyms: "удивлённый, ошеломлённый, не ожидавший",
-            translation_usage:
-                "Используется, когда кто-то сильно удивлён или сбит с толку неожиданным событием.",
-            extra_tags: &["english", "vocab"],
-        }
-        .render(),
-        TemplateKind::Simple => SimpleCard {
-            front: "<b>accident</b>",
-            back: "<b>случайность</b>",
-            tags: &["noun"],
-        }
-        .render(),
+    let http_client = reqwest::Client::new();
+    let vocabulary_card = build_vocabulary_card(
+        &http_client,
+        &args.term,
+        &source_lang,
+        &target_lang,
+        config.translation_base.as_deref(),
+    )
+    .await?;
+
+    let mut fields = match template_kind {
+        TemplateKind::Vocabulary => vocabulary_card.render(),
+        TemplateKind::Simple => render_simple_fields(&vocabulary_card),
     };
+
+    let term_tag = build_term_tag(&args.term);
+    if !fields.tags.iter().any(|tag| tag == &term_tag) {
+        fields.tags.push(term_tag.clone());
+    }
+
+    for tag in &config.extra_tags {
+        if !fields.tags.iter().any(|existing| existing == tag) {
+            fields.tags.push(tag.clone());
+        }
+    }
 
     let mut builder = NoteBuilder::new(model.clone())
         .with_field_raw(front_field, &fields.front)
@@ -74,7 +130,89 @@ async fn main() -> Result<()> {
     let note = builder.build()?;
 
     // Add the note to the first deck
-    let note_id = client.cards().add_note(&deck, note, false, None)?;
-    println!("Added note with ID: {}", note_id.value());
-    Ok(())
+    match client
+        .cards()
+        .add_note(&deck, note, false, Some(DuplicateScope::Deck))
+    {
+        Ok(note_id) => {
+            println!("Added note with ID: {}", note_id.value());
+            Ok(())
+        }
+        Err(err)
+            if err.to_string().to_lowercase().contains("duplicate note")
+                || err.to_string().to_lowercase().contains("duplicate") =>
+        {
+            println!(
+                "Note for term '{}' already exists in deck '{}'; skipping.",
+                args.term,
+                deck.name()
+            );
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn render_simple_fields(card: &VocabularyCard) -> CardFields {
+    let mut tags = card.extra_tags.clone();
+    if !card.part_of_speech.is_empty() {
+        tags.push(card.part_of_speech.clone());
+    }
+
+    let synonyms_block = if card.translation_synonyms.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<div style=\"margin-top:0.6em; color:#5e84c1;\">{}</div>",
+            card.translation_synonyms
+        )
+    };
+
+    SimpleCard {
+        front: format!("<b>{}</b>", card.term),
+        back: format!(
+            concat!(
+                "<div style=\"font-size:1.2em;\">{translation}</div>",
+                "{synonyms}",
+                "<div style=\"margin-top:0.8em; color:#666;\">{usage}</div>",
+            ),
+            translation = card.translation_heading,
+            synonyms = synonyms_block,
+            usage = card.translation_usage,
+        ),
+        tags,
+    }
+    .render()
+}
+
+fn build_term_tag(term: &str) -> String {
+    let mut slug = String::with_capacity(term.len());
+    let mut last_was_sep = false;
+
+    for c in term.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if c.is_whitespace() || matches!(c, '-' | '_' | ':' | '/' | '\\') {
+            if !last_was_sep && !slug.is_empty() {
+                slug.push('_');
+            }
+            last_was_sep = true;
+        } else {
+            if !last_was_sep && !slug.is_empty() {
+                slug.push('_');
+            }
+            last_was_sep = true;
+        }
+    }
+
+    if slug.ends_with('_') {
+        slug.pop();
+    }
+
+    if slug.is_empty() {
+        slug.push_str("term");
+    }
+
+    format!("term:{}", slug)
 }

@@ -1,8 +1,13 @@
+CONFIG_PATH := "config.toml"
+
 build:
-  cargo build
+	cargo build
 
 clean:
-  cargo clean
+	cargo clean
 
-run:
-  cargo run
+run term="aback":
+	cargo run -- --config {{CONFIG_PATH}} --term {{term}}
+
+test:
+	cargo test

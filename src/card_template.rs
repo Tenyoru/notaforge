@@ -8,15 +8,16 @@ pub trait CardTemplate {
     fn render(&self) -> CardFields;
 }
 
-pub struct ExampleSentence<'a> {
-    pub sentence: &'a str,
-    pub highlight: &'a str,
+#[derive(Default)]
+pub struct ExampleSentence {
+    pub sentence: String,
+    pub highlight: String,
 }
 
-impl<'a> ExampleSentence<'a> {
+impl ExampleSentence {
     fn render(&self) -> String {
         if self.highlight.is_empty() {
-            return self.sentence.to_owned();
+            return self.sentence.clone();
         }
 
         let highlight_html = format!(
@@ -24,36 +25,42 @@ impl<'a> ExampleSentence<'a> {
             self.highlight
         );
 
-        if self.sentence.contains(self.highlight) {
-            self.sentence.replacen(self.highlight, &highlight_html, 1)
+        if self.sentence.contains(&self.highlight) {
+            self.sentence.replacen(&self.highlight, &highlight_html, 1)
         } else {
-            self.sentence.to_owned()
+            self.sentence.clone()
         }
     }
 }
 
-pub struct VocabularyCard<'a> {
-    pub term: &'a str,
-    pub pronunciation: &'a str,
-    pub part_of_speech: &'a str,
-    pub example: ExampleSentence<'a>,
-    pub translation_heading: &'a str,
-    pub translation_synonyms: &'a str,
-    pub translation_usage: &'a str,
-    pub extra_tags: &'a [&'a str],
+pub struct VocabularyCard {
+    pub term: String,
+    pub pronunciation: String,
+    pub part_of_speech: String,
+    pub example: ExampleSentence,
+    pub translation_heading: String,
+    pub translation_synonyms: String,
+    pub translation_usage: String,
+    pub extra_tags: Vec<String>,
 }
 
-impl<'a> CardTemplate for VocabularyCard<'a> {
+impl CardTemplate for VocabularyCard {
     fn render(&self) -> CardFields {
+        let part_display = if self.part_of_speech.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", self.part_of_speech)
+        };
+
         let front = format!(
             concat!(
                 "<b style=\"font-size:1.4em;\">{term}</b>",
-                "<br><span style=\"color:#888;\">{pronunciation} · {part_of_speech}</span>",
+                "<br><span style=\"color:#888;\">{pronunciation}{part_display}</span>",
                 "<br><br><i>{example}</i>",
             ),
             term = self.term,
             pronunciation = self.pronunciation,
-            part_of_speech = self.part_of_speech,
+            part_display = part_display,
             example = self.example.render(),
         );
 
@@ -72,28 +79,28 @@ impl<'a> CardTemplate for VocabularyCard<'a> {
             usage = self.translation_usage,
         );
 
-        CardFields {
-            front,
-            back,
-            tags: std::iter::once(self.part_of_speech.to_owned())
-                .chain(self.extra_tags.iter().map(|t| t.to_string()))
-                .collect(),
+        let mut tags = Vec::new();
+        if !self.part_of_speech.is_empty() {
+            tags.push(self.part_of_speech.clone());
         }
+        tags.extend(self.extra_tags.iter().filter(|t| !t.is_empty()).cloned());
+
+        CardFields { front, back, tags }
     }
 }
 
-pub struct SimpleCard<'a> {
-    pub front: &'a str,
-    pub back: &'a str,
-    pub tags: &'a [&'a str],
+pub struct SimpleCard {
+    pub front: String,
+    pub back: String,
+    pub tags: Vec<String>,
 }
 
-impl<'a> CardTemplate for SimpleCard<'a> {
+impl CardTemplate for SimpleCard {
     fn render(&self) -> CardFields {
         CardFields {
-            front: self.front.to_owned(),
-            back: self.back.to_owned(),
-            tags: self.tags.iter().map(|tag| tag.to_string()).collect(),
+            front: self.front.clone(),
+            back: self.back.clone(),
+            tags: self.tags.clone(),
         }
     }
 }
@@ -105,8 +112,8 @@ mod tests {
     #[test]
     fn renders_example_sentence_with_highlight() {
         let example = ExampleSentence {
-            sentence: "I was taken aback by her sudden outburst.",
-            highlight: "taken aback",
+            sentence: "I was taken aback by her sudden outburst.".to_string(),
+            highlight: "taken aback".to_string(),
         };
 
         let rendered = example.render();
@@ -117,17 +124,17 @@ mod tests {
     #[test]
     fn renders_vocabulary_card_fields() {
         let card = VocabularyCard {
-            term: "aback",
-            pronunciation: "/əˈbæk/",
-            part_of_speech: "adverb",
+            term: "aback".to_string(),
+            pronunciation: "/əˈbæk/".to_string(),
+            part_of_speech: "adverb".to_string(),
             example: ExampleSentence {
-                sentence: "I was taken aback by her sudden outburst.",
-                highlight: "taken aback",
+                sentence: "I was taken aback by her sudden outburst.".to_string(),
+                highlight: "taken aback".to_string(),
             },
-            translation_heading: "застигнутый врасплох",
-            translation_synonyms: "удивлённый",
-            translation_usage: "Используется при внезапном удивлении.",
-            extra_tags: &["english", "emotion"],
+            translation_heading: "застигнутый врасплох".to_string(),
+            translation_synonyms: "удивлённый".to_string(),
+            translation_usage: "Используется при внезапном удивлении.".to_string(),
+            extra_tags: vec!["english".to_string(), "emotion".to_string()],
         };
 
         let fields = card.render();
@@ -140,9 +147,9 @@ mod tests {
     #[test]
     fn renders_simple_card() {
         let card = SimpleCard {
-            front: "Front",
-            back: "Back",
-            tags: &["tag1", "tag2"],
+            front: "Front".to_string(),
+            back: "Back".to_string(),
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
         };
 
         let fields = card.render();
